@@ -10,9 +10,31 @@ Tap for Zendesk
 
 ## Authentication
 
-### Using OAuth
+Precedence when several methods are configured: OAuth client credentials > OAuth access token > API token.
 
-OAuth is the default authentication method for `tap-zendesk`. To use OAuth, you will need to fetch an `access_token` from a configured Zendesk integration. See https://support.zendesk.com/hc/en-us/articles/203663836 for more details on how to integrate your application with Zendesk.
+### Using OAuth client credentials (recommended)
+
+Zendesk now expires OAuth tokens (access: 30 min default / 48 h max, refresh: 30 days default / 90 days max), enforced on all clients by 2027-04-01. A static `access_token` will stop working.
+
+With `client_id` / `client_secret` of a Zendesk OAuth client, the tap fetches an access token through the [`client_credentials` grant](https://developer.zendesk.com/api-reference/ticketing/oauth/grant_type_tokens/) at startup, refreshes it before it expires, and retries once on `401` with a fresh token.
+
+**config.json**
+```json
+{
+  "client_id": "my_oauth_client",
+  "client_secret": "AVERYLONGSECRET",
+  "subdomain": "acme",
+  "start_date": "2000-01-01T00:00:00Z"
+}
+```
+
+Optional:
+- `oauth_scope`: token scope, defaults to `read`.
+- `oauth_expires_in`: requested access token lifetime in seconds (300 to 172800). Zendesk default (1800) if omitted.
+
+### Using OAuth access token
+
+To use a static OAuth access token, you will need to fetch an `access_token` from a configured Zendesk integration. See https://support.zendesk.com/hc/en-us/articles/203663836 for more details on how to integrate your application with Zendesk.
 
 **config.json**
 ```json
