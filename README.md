@@ -88,5 +88,3 @@ e.g.
 ```
 
 note: above extract is a part of the complete metadata for tickets 
-### 
-Copyright &copy; 2018 Stitch
