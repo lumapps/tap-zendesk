@@ -9,6 +9,7 @@ from requests.adapters import HTTPAdapter
 import singer
 from singer import metadata, Schema, metrics as singer_metrics
 from tap_zendesk import metrics as zendesk_metrics
+from tap_zendesk.auth import ClientCredentialsAuth, DEFAULT_SCOPE
 from tap_zendesk.discover import discover_streams
 from tap_zendesk.streams import STREAMS
 from tap_zendesk.sync import sync_stream
@@ -20,7 +21,13 @@ REQUIRED_CONFIG_KEYS = [
     "subdomain",
 ]
 
-# default authentication
+# OAuth client credentials authentication (recommended, tokens are refreshed automatically)
+CLIENT_CREDENTIALS_CONFIG_KEYS = [
+    "client_id",
+    "client_secret",
+]
+
+# static OAuth access token authentication (deprecated by Zendesk token expiration)
 OAUTH_CONFIG_KEYS = [
     "access_token",
 ]
@@ -100,6 +107,10 @@ class DependencyException(Exception):
     pass
 
 
+class MissingCredentialsException(Exception):
+    pass
+
+
 def validate_dependencies(selected_stream_ids):
     errs = []
     msg_tmpl = ("Unable to extract {0} data. "
@@ -171,6 +182,21 @@ def do_sync(client, catalog, state, config):
     zendesk_metrics.log_aggregate_rates()
 
 
+def client_credentials_auth(config):
+    if not set(CLIENT_CREDENTIALS_CONFIG_KEYS).issubset(config.keys()):
+        LOGGER.debug("OAuth client credentials authentication unavailable.")
+        return None
+
+    LOGGER.info("Using OAuth client credentials authentication.")
+    return ClientCredentialsAuth(
+        subdomain=config['subdomain'],
+        client_id=config['client_id'],
+        client_secret=config['client_secret'],
+        scope=config.get('oauth_scope', DEFAULT_SCOPE),
+        expires_in=config.get('oauth_expires_in'),
+    )
+
+
 def oauth_auth(args):
     if not set(OAUTH_CONFIG_KEYS).issubset(args.config.keys()):
         LOGGER.debug("OAuth authentication unavailable.")
@@ -212,16 +238,32 @@ def get_session(config):
     return session
 
 
+def get_client(args):
+    """ Build the Zenpy client. Precedence: client credentials > OAuth access token > API token. """
+    session = get_session(args.config)
+
+    cc_auth = client_credentials_auth(args.config)
+    if cc_auth:
+        if session is None:
+            session = requests.Session()
+            session.mount("https://", HTTPAdapter(**Zenpy.http_adapter_kwargs()))
+        session.auth = cc_auth
+        # Tell Zenpy the session is already authorized so it doesn't set its own credentials.
+        session.authorized = True
+        return Zenpy(subdomain=args.config['subdomain'], session=session)
+
+    creds = oauth_auth(args) or api_token_auth(args)
+    if not creds:
+        raise MissingCredentialsException(
+            "No suitable authentication keys provided. Expected one of: "
+            f"{CLIENT_CREDENTIALS_CONFIG_KEYS}, {OAUTH_CONFIG_KEYS} or {API_TOKEN_CONFIG_KEYS}.")
+    return Zenpy(session=session, **creds)
+
+
 @singer.utils.handle_top_exception(LOGGER)
 def main():
     parsed_args = singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
-    # OAuth has precedence
-    creds = oauth_auth(parsed_args) or api_token_auth(parsed_args)
-    session = get_session(parsed_args.config)
-    client = Zenpy(session=session, **creds)
-
-    if not client:
-        LOGGER.error("""No suitable authentication keys provided.""")
+    client = get_client(parsed_args)
 
     if parsed_args.discover:
         do_discover(client)
